@@ -20,6 +20,7 @@ import type {
   RemoteSecretImportCandidate,
   RemoteSecretImportConflict,
   RemoteSecretImportRowResult,
+  SecretProviderConfigDiscoveryPreviewResult,
   SecretBindingTargetType,
   SecretProvider,
   SecretProviderConfigHealthResponse,
@@ -34,6 +35,7 @@ import {
   isUuidLike,
   normalizeAgentUrlKey,
   secretProviderConfigPayloadSchema,
+  secretProviderConfigDiscoveryPreviewSchema,
   updateSecretProviderConfigSchema,
 } from "@paperclipai/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
@@ -469,6 +471,19 @@ export function secretService(db: Db) {
       throw unprocessable("Invalid provider vault config", parsed.error.flatten());
     }
     return parsed.data.config;
+  }
+
+  function toDraftProviderVaultRuntimeConfig(input: {
+    companyId: string;
+    provider: SecretProvider;
+    config: Record<string, unknown>;
+  }): SecretProviderVaultRuntimeConfig {
+    return {
+      id: `discovery-preview-${input.companyId}`,
+      provider: input.provider,
+      status: "ready",
+      config: validateProviderConfigPayload(input.provider, input.config),
+    };
   }
 
   function providerConfigHealth(input: {
@@ -948,6 +963,54 @@ export function secretService(db: Db) {
     listProviders: () => listSecretProviders(),
 
     checkProviders: () => checkSecretProviders(),
+
+    previewProviderConfigDiscovery: async (
+      companyId: string,
+      input: {
+        provider: SecretProvider;
+        config?: Record<string, unknown>;
+        query?: string | null;
+        nextToken?: string | null;
+        pageSize?: number;
+      },
+    ): Promise<SecretProviderConfigDiscoveryPreviewResult> => {
+      const parsed = secretProviderConfigDiscoveryPreviewSchema.safeParse({
+        provider: input.provider,
+        config: input.config ?? {},
+        query: input.query,
+        nextToken: input.nextToken,
+        pageSize: input.pageSize,
+      });
+      if (!parsed.success) {
+        throw unprocessable("Invalid provider vault discovery config", parsed.error.flatten());
+      }
+      const providerId = parsed.data.provider as SecretProvider;
+      const provider = getSecretProvider(providerId);
+      if (!provider.discoverProviderConfigs) {
+        throw unprocessable(`${providerId} provider does not support provider vault discovery`);
+      }
+      const runtimeConfig = toDraftProviderVaultRuntimeConfig({
+        companyId,
+        provider: providerId,
+        config: parsed.data.config,
+      });
+      try {
+        return await provider.discoverProviderConfigs({
+          companyId,
+          providerConfig: runtimeConfig,
+          query: parsed.data.query,
+          nextToken: parsed.data.nextToken,
+          pageSize: parsed.data.pageSize,
+        });
+      } catch (error) {
+        throw remoteProviderHttpError(error, {
+          companyId,
+          provider: providerId,
+          providerConfigId: "discovery-preview",
+          operation: "secret_provider_config.discovery.preview",
+        });
+      }
+    },
 
     listProviderConfigs: (companyId: string) =>
       db

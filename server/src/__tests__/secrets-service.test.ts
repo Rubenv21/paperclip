@@ -1207,6 +1207,111 @@ describeEmbeddedPostgres("secretService", () => {
     expect(thrown instanceof Error ? thrown.message : String(thrown)).not.toContain("arn:aws");
   });
 
+  it("previews AWS provider vault discovery from draft config without persisting a provider vault", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const discoverSpy = vi.spyOn(awsSecretsManagerProvider, "discoverProviderConfigs").mockResolvedValue({
+      provider: "aws_secrets_manager",
+      nextToken: null,
+      sampledSecretCount: 1,
+      skippedForeignPaperclipSampleCount: 0,
+      candidates: [
+        {
+          provider: "aws_secrets_manager",
+          displayName: "AWS production",
+          config: {
+            region: "us-east-1",
+            namespace: "prod-use1",
+            secretNamePrefix: "paperclip",
+            kmsKeyId: null,
+            ownerTag: "platform",
+            environmentTag: "production",
+          },
+          sampleCount: 1,
+          samples: [
+            { name: "paperclip/prod-use1/company-1/openai", hasKmsKey: false, tagKeys: ["paperclip:environment"] },
+          ],
+          signals: {
+            namespace: "prod-use1",
+            secretNamePrefix: "paperclip",
+            environmentTag: "production",
+            ownerTag: "platform",
+            kmsKeyId: null,
+            hasKmsKey: false,
+            sampleCount: 1,
+            paperclipManagedSampleCount: 0,
+            skippedForeignPaperclipSampleCount: 0,
+          },
+          warnings: [],
+        },
+      ],
+      warnings: [],
+    });
+
+    const preview = await svc.previewProviderConfigDiscovery(companyId, {
+      provider: "aws_secrets_manager",
+      config: { region: "us-east-1" },
+      query: "openai",
+      pageSize: 25,
+    });
+
+    expect(discoverSpy).toHaveBeenCalledWith({
+      companyId,
+      providerConfig: {
+        id: `discovery-preview-${companyId}`,
+        provider: "aws_secrets_manager",
+        status: "ready",
+        config: { region: "us-east-1" },
+      },
+      query: "openai",
+      nextToken: undefined,
+      pageSize: 25,
+    });
+    expect(preview.candidates[0]?.config).toMatchObject({
+      region: "us-east-1",
+      namespace: "prod-use1",
+    });
+    expect(JSON.stringify(preview)).not.toContain("runtime-secret");
+    const persistedVaults = await db.select().from(companySecretProviderConfigs);
+    expect(persistedVaults).toHaveLength(0);
+  });
+
+  it("sanitizes AWS provider vault discovery errors before crossing the service boundary", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const rawProviderMessage =
+      "AccessDeniedException: User: arn:aws:sts::123456789012:assumed-role/prod/Paperclip is not authorized to perform secretsmanager:ListSecrets";
+
+    vi.spyOn(awsSecretsManagerProvider, "discoverProviderConfigs").mockRejectedValueOnce(
+      new SecretProviderClientError({
+        code: "access_denied",
+        provider: "aws_secrets_manager",
+        operation: "discoverProviderConfigs",
+        message: "AWS Secrets Manager denied the request. Check IAM permissions for this provider vault.",
+        rawMessage: rawProviderMessage,
+      }),
+    );
+
+    let thrown: unknown;
+    try {
+      await svc.previewProviderConfigDiscovery(companyId, {
+        provider: "aws_secrets_manager",
+        config: { region: "us-east-1" },
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toMatchObject({
+      status: 403,
+      message: "AWS Secrets Manager denied the request. Check IAM permissions for this provider vault.",
+      details: { code: "access_denied" },
+    });
+    expect(JSON.stringify(thrown)).not.toContain("arn:aws");
+    expect(JSON.stringify(thrown)).not.toContain("123456789012");
+    expect(thrown instanceof Error ? thrown.message : String(thrown)).not.toContain("arn:aws");
+  });
+
   it("imports AWS remote references row-by-row without fetching plaintext", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
