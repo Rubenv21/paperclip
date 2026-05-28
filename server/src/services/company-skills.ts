@@ -2117,6 +2117,7 @@ export function companySkillService(db: Db) {
     await ensureSkillInventoryCurrent(companyId);
     const skill = await getById(companyId, skillId);
     if (!skill) return null;
+    if (skill.sourceType !== "catalog" && skill.sourceType !== "local_path") return null;
     const audit = await auditInstalledSkillBytes(skill);
     await persistAuditMetadata(skill, audit);
     return audit;
@@ -2400,19 +2401,21 @@ export function companySkillService(db: Db) {
     if (!status?.supported) {
       throw unprocessable(status?.reason ?? "This skill does not support updates.");
     }
-    const audit = await auditInstalledSkillBytes(skill);
-    await persistAuditMetadata(skill, audit);
-    if (audit.verdict === "fail") {
-      throw unprocessable("Skill update is blocked by hard-stop audit findings.", {
-        updateHoldReason: "audit_hard_stop",
-        audit,
-      });
-    }
-    if (audit.originHash && audit.installedHash !== audit.originHash && !options.force) {
-      throw unprocessable("Skill update is held because local modifications were detected; rerun with --force to discard them.", {
-        updateHoldReason: "local_modifications",
-        audit,
-      });
+    if (skill.sourceType === "catalog" || skill.sourceType === "local_path") {
+      const audit = await auditInstalledSkillBytes(skill);
+      await persistAuditMetadata(skill, audit);
+      if (audit.verdict === "fail") {
+        throw unprocessable("Skill update is blocked by hard-stop audit findings.", {
+          updateHoldReason: "audit_hard_stop",
+          audit,
+        });
+      }
+      if (audit.originHash && audit.installedHash !== audit.originHash && !options.force) {
+        throw unprocessable("Skill update is held because local modifications were detected; rerun with --force to discard them.", {
+          updateHoldReason: "local_modifications",
+          audit,
+        });
+      }
     }
 
     if (skill.sourceType === "catalog") {

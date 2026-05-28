@@ -108,6 +108,38 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     });
   });
 
+  it("does not persist audit failures for remote-source skills", async () => {
+    const companyId = randomUUID();
+    const skillId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(companySkills).values({
+      id: skillId,
+      companyId,
+      key: "github.com/acme/remote-skill",
+      slug: "remote-skill",
+      name: "Remote Skill",
+      description: null,
+      markdown: "# Remote Skill\n",
+      sourceType: "github",
+      sourceLocator: "https://github.com/acme/remote-skill",
+      sourceRef: "main",
+      trustLevel: "markdown_only",
+      compatibility: "compatible",
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+      metadata: { sourceKind: "github", owner: "acme", repo: "remote-skill" },
+    });
+
+    await expect(svc.auditSkill(companyId, skillId)).resolves.toBeNull();
+    await expect(svc.getById(companyId, skillId)).resolves.toMatchObject({
+      metadata: { sourceKind: "github", owner: "acme", repo: "remote-skill" },
+    });
+  });
+
   it("preserves missing local-path skills that active agents still desire", async () => {
     const companyId = randomUUID();
     const skillId = randomUUID();
